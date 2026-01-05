@@ -4,10 +4,11 @@
  * Hosted MCP Server for L0166
  *
  * Runs as an HTTP server with SSE transport.
- * Users authenticate by passing their Graffiticode API key in the Authorization header.
+ * Users authenticate by passing their Graffiticode API credentials in the Authorization header
+ * using Basic auth format: "Basic base64(keyId:keySecret)"
  *
  * Usage:
- *   GRAFFITICODE_API_URL=https://api.graffiticode.org node dist/server.js
+ *   node dist/server.js
  *
  * Client config:
  *   {
@@ -15,7 +16,7 @@
  *       "graffiticode-l0166": {
  *         "url": "http://localhost:3001/sse",
  *         "headers": {
- *           "Authorization": "Bearer gc_xxxxx"
+ *           "Authorization": "Basic <base64(GC_API_KEY_ID:GC_API_KEY_SECRET)>"
  *         }
  *       }
  *     }
@@ -29,29 +30,41 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { createServer, IncomingMessage, ServerResponse } from "http";
-import { tool, compile } from "./tool.js";
+import { tool, execute } from "./tool.js";
 import { createAuthClient } from "./auth.js";
 
-const API_URL = process.env.GRAFFITICODE_API_URL || "https://api.graffiticode.org";
 const PORT = parseInt(process.env.PORT || "3001", 10);
 
 // Store active transports by session
 const transports = new Map<string, SSEServerTransport>();
 
-function extractApiKey(req: IncomingMessage): string | null {
+interface ApiKeyCredentials {
+  keyId: string;
+  keySecret: string;
+}
+
+function extractCredentials(req: IncomingMessage): ApiKeyCredentials | null {
   const authHeader = req.headers.authorization;
   if (!authHeader) return null;
 
-  // Support "Bearer <token>" format
-  if (authHeader.startsWith("Bearer ")) {
-    return authHeader.slice(7);
+  // Support "Basic base64(keyId:keySecret)" format
+  if (authHeader.startsWith("Basic ")) {
+    try {
+      const decoded = Buffer.from(authHeader.slice(6), "base64").toString("utf-8");
+      const [keyId, keySecret] = decoded.split(":");
+      if (keyId && keySecret) {
+        return { keyId, keySecret };
+      }
+    } catch {
+      return null;
+    }
   }
 
-  return authHeader;
+  return null;
 }
 
-function createMcpServer(apiKey: string) {
-  const auth = createAuthClient(apiKey);
+function createMcpServer(credentials: ApiKeyCredentials) {
+  const auth = createAuthClient(credentials);
 
   const server = new Server(
     {
@@ -78,20 +91,13 @@ function createMcpServer(apiKey: string) {
       throw new Error(`Unknown tool: ${request.params.name}`);
     }
 
-    const { code, data } = request.params.arguments as {
-      code: string;
-      data?: Record<string, unknown>;
+    const { prompt } = request.params.arguments as {
+      prompt: string;
     };
 
     try {
       const token = await auth.getToken();
-      const result = await compile({
-        apiUrl: API_URL,
-        token,
-        lang: "0166",
-        code,
-        data: data || {},
-      });
+      const result = await execute({ token, prompt });
 
       return {
         content: [
@@ -141,13 +147,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
   // SSE endpoint
   if (url.pathname === "/sse") {
-    const apiKey = extractApiKey(req);
+    const credentials = extractCredentials(req);
 
-    if (!apiKey) {
+    if (!credentials) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         error: "Authorization required",
-        message: "Include your Graffiticode API key in the Authorization header"
+        message: "Include your Graffiticode API credentials in the Authorization header as 'Basic base64(keyId:keySecret)'"
       }));
       return;
     }
@@ -157,7 +163,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     const sessionId = crypto.randomUUID();
     transports.set(sessionId, transport);
 
-    const server = createMcpServer(apiKey);
+    const server = createMcpServer(credentials);
 
     // Clean up on disconnect
     res.on("close", () => {
@@ -209,7 +215,7 @@ httpServer.listen(PORT, () => {
       "graffiticode-l0166": {
         url: `http://localhost:${PORT}/sse`,
         headers: {
-          Authorization: "Bearer <your-api-key>"
+          Authorization: "Basic <base64(GC_API_KEY_ID:GC_API_KEY_SECRET)>"
         }
       }
     }

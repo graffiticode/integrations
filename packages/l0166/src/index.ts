@@ -6,20 +6,20 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { tool, compile } from "./tool.js";
+import { tool, execute } from "./tool.js";
 import { createAuthClient } from "./auth.js";
 
-const API_URL = process.env.GRAFFITICODE_API_URL || "https://api.graffiticode.org";
-
 async function main() {
-  const apiKey = process.env.GRAFFITICODE_API_KEY;
-  if (!apiKey) {
-    console.error("Error: GRAFFITICODE_API_KEY environment variable is required");
+  const keyId = process.env.GC_API_KEY_ID;
+  const keySecret = process.env.GC_API_KEY_SECRET;
+
+  if (!keyId || !keySecret) {
+    console.error("Error: GC_API_KEY_ID and GC_API_KEY_SECRET environment variables are required");
     process.exit(1);
   }
 
   // Create auth client for token management
-  const auth = createAuthClient(apiKey);
+  const auth = createAuthClient({ keyId, keySecret });
 
   // Create MCP server
   const server = new Server(
@@ -47,20 +47,13 @@ async function main() {
       throw new Error(`Unknown tool: ${request.params.name}`);
     }
 
-    const { code, data } = request.params.arguments as {
-      code: string;
-      data?: Record<string, unknown>;
+    const { prompt } = request.params.arguments as {
+      prompt: string;
     };
 
     try {
       const token = await auth.getToken();
-      const result = await compile({
-        apiUrl: API_URL,
-        token,
-        lang: "0166",
-        code,
-        data: data || {},
-      });
+      const result = await execute({ token, prompt });
 
       return {
         content: [
