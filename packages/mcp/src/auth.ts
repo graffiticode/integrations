@@ -10,12 +10,7 @@ interface TokenCache {
   expiresAt: number;
 }
 
-interface ApiKeyCredentials {
-  keyId: string;
-  keySecret: string;
-}
-
-export function createAuthClient(credentials: ApiKeyCredentials): AuthClient {
+export function createAuthClient(apiKey: string): AuthClient {
   let cache: TokenCache | null = null;
 
   async function getFirebaseCustomToken(): Promise<string> {
@@ -25,7 +20,7 @@ export function createAuthClient(credentials: ApiKeyCredentials): AuthClient {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        token: credentials.keySecret,
+        token: apiKey,
       }),
     });
 

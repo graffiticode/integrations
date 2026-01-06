@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "graffiticode": {
+      "type": "http",
+      "url": "https://mcp.graffiticode.org/mcp",
+      "headers": {
+        "Authorization": "${GC_API_KEY_SECRET}"
+      }
+    }
+  }
+}
