@@ -178,9 +178,15 @@ function getReactUsage(langId: string) {
 
   return {
     npm_package: packageName,
+    peer_dependencies: {
+      react: "^17.0.0 || ^18.0.0 || ^19.0.0",
+      "react-dom": "^17.0.0 || ^18.0.0 || ^19.0.0",
+    },
     usage: `The Form component expects a state object with:
-- state.data: The data model returned from compilation (getData)
+- state.data: The COMPLETE data object from create_item/get_item (must include validation.regions)
 - state.apply(action): Method for state transitions
+
+IMPORTANT: Pass the complete 'data' object - the Form requires validation.regions to render.
 
 Create a state object like this:
   function createState(initialData) {
@@ -199,7 +205,7 @@ Then pass it to the Form component:
   <Form state={createState(itemData)} />`,
     example: `import React from 'react';
 import { Form } from '${packageName}';
-import '${packageName}/dist/style.css';
+import '${packageName}/style.css';
 
 function createState(initialData) {
   let data = initialData;
@@ -214,10 +220,26 @@ function createState(initialData) {
 }
 
 function App({ itemData }) {
-  // itemData is the 'data' field from create_item, update_item, or get_item
+  // itemData is the COMPLETE 'data' field from create_item, update_item, or get_item
+  // It must include: title, instructions, validation (with regions), and interaction
   const [state] = React.useState(() => createState(itemData));
   return <Form state={state} />;
 }`,
+    vite_config: `// vite.config.js - Add resolve.dedupe if you encounter React version conflicts
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    dedupe: ['react', 'react-dom']
+  }
+});`,
+    troubleshooting: {
+      "Multiple React versions error": "Add resolve.dedupe: ['react', 'react-dom'] to your Vite/webpack config",
+      "Cannot read 'regions' of null": "Pass the complete 'data' object from the API response, not a subset",
+      "CSS not loading": `Import styles from '${packageName}/style.css' (not /dist/style.css)`,
+    },
   };
 }
 
