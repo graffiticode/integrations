@@ -31,6 +31,15 @@ import {
 import { createServer, IncomingMessage, ServerResponse } from "http";
 import { tools, handleToolCall } from "./tools.js";
 import { createAuthClient } from "./auth.js";
+import {
+  handleProtectedResourceMetadata,
+  handleAuthServerMetadata,
+  handleClientRegistration,
+  handleAuthorize,
+  handleCallback,
+  handleToken,
+  getFirebaseTokenFromAccessToken,
+} from "./oauth/handlers.js";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 
@@ -38,7 +47,9 @@ const PORT = parseInt(process.env.PORT || "3001", 10);
 const transports = new Map<string, StreamableHTTPServerTransport>();
 const servers = new Map<string, Server>();
 
-function extractApiKey(req: IncomingMessage): string | null {
+const MCP_SERVER_URL = process.env.MCP_SERVER_URL || `http://localhost:${PORT}`;
+
+function extractBearerToken(req: IncomingMessage): string | null {
   const authHeader = req.headers.authorization;
   if (!authHeader) return null;
 
@@ -50,9 +61,34 @@ function extractApiKey(req: IncomingMessage): string | null {
   return authHeader;
 }
 
-function createMcpServer(apiKey: string) {
-  const auth = createAuthClient(apiKey);
+/**
+ * Try to get a Firebase token from either OAuth access token or API key
+ * Returns { token, source } or null if no valid auth
+ */
+async function resolveFirebaseToken(
+  bearerToken: string
+): Promise<{ token: string; source: "oauth" | "apikey" } | null> {
+  // First, try OAuth access token
+  const oauthToken = getFirebaseTokenFromAccessToken(bearerToken);
+  if (oauthToken) {
+    return { token: oauthToken, source: "oauth" };
+  }
 
+  // Fall back to API key authentication
+  try {
+    const auth = createAuthClient(bearerToken);
+    const token = await auth.getToken();
+    return { token, source: "apikey" };
+  } catch {
+    return null;
+  }
+}
+
+interface TokenProvider {
+  getToken(): Promise<string>;
+}
+
+function createMcpServer(tokenProvider: TokenProvider) {
   const server = new Server(
     {
       name: "graffiticode",
@@ -77,7 +113,7 @@ function createMcpServer(apiKey: string) {
     const { name, arguments: args } = request.params;
 
     try {
-      const token = await auth.getToken();
+      const token = await tokenProvider.getToken();
       const result = await handleToolCall(
         { token },
         name,
@@ -130,15 +166,57 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
+  // OAuth 2.1 Endpoints
+
+  // Protected Resource Metadata (RFC 9728)
+  if (url.pathname === "/.well-known/oauth-protected-resource") {
+    handleProtectedResourceMetadata(req, res);
+    return;
+  }
+
+  // Authorization Server Metadata (RFC 8414)
+  if (url.pathname === "/.well-known/oauth-authorization-server") {
+    handleAuthServerMetadata(req, res);
+    return;
+  }
+
+  // Dynamic Client Registration (RFC 7591)
+  if (url.pathname === "/oauth/register" && req.method === "POST") {
+    await handleClientRegistration(req, res);
+    return;
+  }
+
+  // Authorization Endpoint
+  if (url.pathname === "/oauth/authorize" && req.method === "GET") {
+    handleAuthorize(req, res);
+    return;
+  }
+
+  // OAuth Callback (from consent page)
+  if (url.pathname === "/oauth/callback" && req.method === "GET") {
+    handleCallback(req, res);
+    return;
+  }
+
+  // Token Endpoint
+  if (url.pathname === "/oauth/token" && req.method === "POST") {
+    await handleToken(req, res);
+    return;
+  }
+
   // MCP endpoint (Streamable HTTP)
   if (url.pathname === "/mcp") {
-    const apiKey = extractApiKey(req);
+    const bearerToken = extractBearerToken(req);
 
-    if (!apiKey) {
-      res.writeHead(401, { "Content-Type": "application/json" });
+    if (!bearerToken) {
+      // Return 401 with WWW-Authenticate header pointing to OAuth metadata
+      res.writeHead(401, {
+        "Content-Type": "application/json",
+        "WWW-Authenticate": `Bearer resource_metadata="${MCP_SERVER_URL}/.well-known/oauth-protected-resource"`,
+      });
       res.end(JSON.stringify({
         error: "Authorization required",
-        message: "Include your Graffiticode API key in the Authorization header"
+        message: "Include an OAuth access token or API key in the Authorization header"
       }));
       return;
     }
@@ -167,6 +245,29 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       return;
     }
 
+    // Resolve bearer token to Firebase token (OAuth or API key)
+    const resolved = await resolveFirebaseToken(bearerToken);
+    if (!resolved) {
+      res.writeHead(401, {
+        "Content-Type": "application/json",
+        "WWW-Authenticate": `Bearer resource_metadata="${MCP_SERVER_URL}/.well-known/oauth-protected-resource"`,
+      });
+      res.end(JSON.stringify({
+        error: "invalid_token",
+        message: "Invalid or expired access token"
+      }));
+      return;
+    }
+
+    // Create token provider that returns the resolved Firebase token
+    const tokenProvider: TokenProvider = {
+      async getToken() {
+        // For OAuth tokens, the Firebase token is already resolved
+        // For API keys, we've already validated and got the token
+        return resolved.token;
+      }
+    };
+
     // Create new transport and server for new session
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
@@ -184,7 +285,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       }
     };
 
-    const server = createMcpServer(apiKey);
+    const server = createMcpServer(tokenProvider);
     await server.connect(transport);
     await transport.handleRequest(req, res);
     return;
@@ -199,13 +300,21 @@ const httpServer = createServer(handleRequest);
 
 httpServer.listen(PORT, () => {
   console.log(`Graffiticode MCP Server (hosted) running on http://localhost:${PORT}`);
-  console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`\nEndpoints:`);
+  console.log(`  MCP:     http://localhost:${PORT}/mcp`);
+  console.log(`  Health:  http://localhost:${PORT}/health`);
+  console.log(`\nOAuth 2.1 Endpoints:`);
+  console.log(`  Metadata:     http://localhost:${PORT}/.well-known/oauth-authorization-server`);
+  console.log(`  Register:     http://localhost:${PORT}/oauth/register`);
+  console.log(`  Authorize:    http://localhost:${PORT}/oauth/authorize`);
+  console.log(`  Token:        http://localhost:${PORT}/oauth/token`);
   console.log(`\nAvailable tools:`);
   tools.forEach(tool => {
     console.log(`  - ${tool.name}`);
   });
-  console.log(`\nClient configuration:`);
+  console.log(`\nFor Claude Desktop: Add via Settings > Connectors with URL:`);
+  console.log(`  ${MCP_SERVER_URL}/mcp`);
+  console.log(`\nFor API key auth (legacy):`);
   console.log(JSON.stringify({
     mcpServers: {
       "graffiticode": {
