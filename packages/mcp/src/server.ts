@@ -27,10 +27,17 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { createServer, IncomingMessage, ServerResponse } from "http";
 import { tools, handleToolCall } from "./tools.js";
 import { createAuthClient } from "./auth.js";
+import {
+  generateFormWidgetHtml,
+  WIDGET_RESOURCE_URI,
+  WIDGET_MIME_TYPE,
+} from "./widget/index.js";
 import {
   handleProtectedResourceMetadata,
   handleAuthServerMetadata,
@@ -97,6 +104,7 @@ function createMcpServer(tokenProvider: TokenProvider) {
     {
       capabilities: {
         tools: {},
+        resources: {},
       },
     }
   );
@@ -118,16 +126,29 @@ function createMcpServer(tokenProvider: TokenProvider) {
         { token },
         name,
         args as Record<string, unknown>
-      );
+      ) as Record<string, unknown>;
 
-      return {
+      // Extract _meta (widget-only data) from result
+      const { _meta, ...structuredContent } = result;
+
+      // Build response with structuredContent for ChatGPT Apps SDK
+      // and content as text summary for Claude and other MCP clients
+      const response: Record<string, unknown> = {
+        structuredContent,
         content: [
           {
             type: "text",
-            text: JSON.stringify(result, null, 2),
+            text: JSON.stringify(structuredContent, null, 2),
           },
         ],
       };
+
+      // Add _meta at response level for widget access
+      if (_meta) {
+        response._meta = _meta;
+      }
+
+      return response;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {
@@ -140,6 +161,36 @@ function createMcpServer(tokenProvider: TokenProvider) {
         isError: true,
       };
     }
+  });
+
+  // List available resources (Skybridge widgets for ChatGPT)
+  server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    return {
+      resources: [
+        {
+          uri: WIDGET_RESOURCE_URI,
+          name: "Graffiticode Form Widget",
+          mimeType: WIDGET_MIME_TYPE,
+          description: "Interactive form widget for Graffiticode items",
+        },
+      ],
+    };
+  });
+
+  // Read resource content
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (request.params.uri === WIDGET_RESOURCE_URI) {
+      return {
+        contents: [
+          {
+            uri: WIDGET_RESOURCE_URI,
+            mimeType: WIDGET_MIME_TYPE,
+            text: generateFormWidgetHtml(),
+          },
+        ],
+      };
+    }
+    throw new Error(`Resource not found: ${request.params.uri}`);
   });
 
   return server;

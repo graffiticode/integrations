@@ -8,6 +8,7 @@ import {
   listLanguages as apiListLanguages,
   getLanguageInfo as apiGetLanguageInfo,
 } from "./api.js";
+import { WIDGET_RESOURCE_URI, WIDGET_CSP } from "./widget/index.js";
 
 // --- Help Entry Structure (matches console HelpPanel) ---
 
@@ -56,7 +57,7 @@ function buildContextualPrompt(
 
 // --- Tool Definitions ---
 
-export const createItemTool: Tool = {
+export const createItemTool = {
   name: "create_item",
   description: `Create a new Graffiticode item in any language.
 
@@ -81,9 +82,13 @@ Returns item_id for use in subsequent update_item or get_item calls.`,
     },
     required: ["language", "description"],
   },
-};
+  _meta: {
+    "openai/outputTemplate": WIDGET_RESOURCE_URI,
+    "openai/widgetCSP": WIDGET_CSP,
+  },
+} as const;
 
-export const updateItemTool: Tool = {
+export const updateItemTool = {
   name: "update_item",
   description: `Update an existing Graffiticode item.
 
@@ -106,9 +111,13 @@ Language is auto-detected from the item.`,
     },
     required: ["item_id", "modification"],
   },
-};
+  _meta: {
+    "openai/outputTemplate": WIDGET_RESOURCE_URI,
+    "openai/widgetCSP": WIDGET_CSP,
+  },
+} as const;
 
-export const getItemTool: Tool = {
+export const getItemTool = {
   name: "get_item",
   description: `Get an existing Graffiticode item by ID.
 
@@ -123,9 +132,18 @@ Returns the item's data, code, and metadata.`,
     },
     required: ["item_id"],
   },
-};
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+  _meta: {
+    "openai/outputTemplate": WIDGET_RESOURCE_URI,
+    "openai/widgetCSP": WIDGET_CSP,
+  },
+} as const;
 
-export const listLanguagesTool: Tool = {
+export const listLanguagesTool = {
   name: "list_languages",
   description: `Discover available Graffiticode languages.
 
@@ -143,9 +161,14 @@ Returns list of languages with IDs, names, descriptions, and categories.`,
       },
     },
   },
-};
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+} as const;
 
-export const getLanguageInfoTool: Tool = {
+export const getLanguageInfoTool = {
   name: "get_language_info",
   description: `Get high-level information about a Graffiticode language.
 
@@ -160,16 +183,21 @@ Returns name, description, category, spec URL, and React usage instructions.`,
     },
     required: ["language"],
   },
-};
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+} as const;
 
-// Export all tools as array
-export const tools: Tool[] = [
+// Export all tools as array (cast to allow _meta extension for ChatGPT Apps SDK)
+export const tools = [
   createItemTool,
   updateItemTool,
   getItemTool,
   listLanguagesTool,
   getLanguageInfoTool,
-];
+] as unknown as Tool[];
 
 // --- React Usage Instructions (universal for all Graffiticode languages) ---
 
@@ -300,6 +328,7 @@ export async function handleCreateItem(
 
   return {
     item_id: item.id,
+    task_id: generated.taskId,
     language: `L${langId}`,
     name: item.name,
     description: generated.description,
@@ -307,6 +336,10 @@ export async function handleCreateItem(
     data,
     react_usage: reactUsage,
     usage: generated.usage,
+    // Widget-only data (not exposed to model)
+    _meta: {
+      access_token: ctx.token,
+    },
   };
 }
 
@@ -375,12 +408,17 @@ export async function handleUpdateItem(
 
   return {
     item_id: updatedItem.id,
+    task_id: generated.taskId,
     language: `L${updatedItem.lang}`,
     name: updatedItem.name,
     description: generated.description,
     data,
     react_usage: reactUsage,
     usage: generated.usage,
+    // Widget-only data (not exposed to model)
+    _meta: {
+      access_token: ctx.token,
+    },
   };
 }
 
@@ -410,6 +448,7 @@ export async function handleGetItem(
 
   return {
     item_id: item.id,
+    task_id: item.taskId,
     language: `L${item.lang}`,
     name: item.name,
     code: item.code,
@@ -417,6 +456,10 @@ export async function handleGetItem(
     react_usage: reactUsage,
     created: item.created,
     updated: item.updated,
+    // Widget-only data (not exposed to model)
+    _meta: {
+      access_token: ctx.token,
+    },
   };
 }
 
