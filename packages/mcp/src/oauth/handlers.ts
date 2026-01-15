@@ -3,7 +3,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "http";
-import { oauthStore } from "./store.js";
+import { oauthStore } from "./firestore-store.js";
 import { verifyPKCE, generateRandomString } from "./pkce.js";
 import type {
   OAuthClient,
@@ -334,10 +334,12 @@ export function handleCallback(
 }
 
 /**
- * Exchange Google ID token for Firebase ID token
+ * Exchange Google ID token for Firebase ID token and refresh token
  */
 async function exchangeGoogleTokenForFirebaseToken(googleIdToken: string): Promise<{
   firebaseIdToken: string;
+  firebaseRefreshToken: string;
+  providerId: string;
   expiresAt: number;
 }> {
   // Step 1: Exchange Google ID token for Firebase custom token
@@ -355,14 +357,14 @@ async function exchangeGoogleTokenForFirebaseToken(googleIdToken: string): Promi
   const authData = (await authResponse.json()) as {
     status: string;
     error?: { message: string } | null;
-    data?: { firebaseCustomToken?: string } | null;
+    data?: { firebaseCustomToken?: string; uid?: string } | null;
   };
 
   if (authData.status !== "success" || !authData.data?.firebaseCustomToken) {
     throw new Error(authData.error?.message || "Failed to get Firebase custom token");
   }
 
-  // Step 2: Exchange Firebase custom token for ID token
+  // Step 2: Exchange Firebase custom token for ID token + refresh token
   const firebaseResponse = await fetch(
     `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${FIREBASE_API_KEY}`,
     {
@@ -382,6 +384,8 @@ async function exchangeGoogleTokenForFirebaseToken(googleIdToken: string): Promi
 
   const firebaseData = (await firebaseResponse.json()) as {
     idToken?: string;
+    refreshToken?: string;
+    localId?: string;
     error?: { message: string };
   };
 
@@ -389,11 +393,63 @@ async function exchangeGoogleTokenForFirebaseToken(googleIdToken: string): Promi
     throw new Error(firebaseData.error?.message || "No ID token returned");
   }
 
+  if (!firebaseData.refreshToken) {
+    throw new Error("No refresh token returned from Firebase");
+  }
+
+  // Firebase ID tokens expire in 1 hour, we use 55 minutes with buffer
+  const expiresAt = Date.now() + TOKEN_EXPIRES_IN * 1000;
+
+  // The providerId is the Firebase UID from the custom token auth
+  // This is the same UID stored in the oauth-links collection
+  const providerId = firebaseData.localId || authData.data.uid || "";
+
+  return {
+    firebaseIdToken: firebaseData.idToken,
+    firebaseRefreshToken: firebaseData.refreshToken,
+    providerId,
+    expiresAt,
+  };
+}
+
+/**
+ * Refresh Firebase ID token using refresh token
+ */
+async function refreshFirebaseToken(firebaseRefreshToken: string): Promise<{
+  firebaseIdToken: string;
+  firebaseRefreshToken: string;
+  expiresAt: number;
+}> {
+  const response = await fetch(
+    `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(firebaseRefreshToken)}`,
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to refresh Firebase token: ${error}`);
+  }
+
+  const data = (await response.json()) as {
+    id_token?: string;
+    refresh_token?: string;
+    error?: { message: string };
+  };
+
+  if (!data.id_token) {
+    throw new Error(data.error?.message || "No ID token returned from refresh");
+  }
+
   // Firebase ID tokens expire in 1 hour, we use 55 minutes with buffer
   const expiresAt = Date.now() + TOKEN_EXPIRES_IN * 1000;
 
   return {
-    firebaseIdToken: firebaseData.idToken,
+    firebaseIdToken: data.id_token,
+    firebaseRefreshToken: data.refresh_token || firebaseRefreshToken,
     expiresAt,
   };
 }
@@ -490,28 +546,34 @@ async function handleAuthorizationCodeGrant(
   oauthStore.markAuthCodeUsed(code);
 
   try {
-    // Exchange Google ID token for Firebase ID token
-    const { firebaseIdToken, expiresAt } = await exchangeGoogleTokenForFirebaseToken(
+    // Exchange Google ID token for Firebase ID token + refresh token
+    const { firebaseIdToken, firebaseRefreshToken, providerId, expiresAt } = await exchangeGoogleTokenForFirebaseToken(
       authCode.google_id_token
     );
+
+    // Get client name for token metadata
+    const client = oauthStore.getClient(authCode.client_id);
+    const clientName = client?.client_name || "Unknown";
 
     // Generate tokens
     const accessToken = generateRandomString(64);
     const refreshToken = generateRandomString(64);
 
-    // Store token entry
+    // Store token entry (now includes Firebase refresh token for indefinite persistence)
     const tokenEntry: TokenEntry = {
       access_token: accessToken,
       refresh_token: refreshToken,
       client_id: authCode.client_id,
+      client_name: clientName,
       scope: authCode.scope,
       firebase_id_token: firebaseIdToken,
+      firebase_refresh_token: firebaseRefreshToken,
       firebase_token_expires_at: expiresAt,
       resource: authCode.resource,
       created_at: Date.now(),
     };
 
-    oauthStore.saveToken(tokenEntry);
+    await oauthStore.saveToken(providerId, tokenEntry);
 
     // Clean up auth code
     oauthStore.deleteAuthCode(code);
@@ -548,80 +610,103 @@ async function handleRefreshTokenGrant(
     return;
   }
 
-  // Look up token by refresh token
-  const tokenEntry = oauthStore.getTokenByRefreshToken(refreshToken);
-  if (!tokenEntry) {
-    sendError(res, 400, { error: "invalid_grant", error_description: "Invalid refresh_token" });
-    return;
-  }
+  try {
+    // Look up token by refresh token (now async)
+    const tokenEntry = await oauthStore.getTokenByRefreshToken(refreshToken);
+    if (!tokenEntry) {
+      sendError(res, 400, { error: "invalid_grant", error_description: "Invalid refresh_token" });
+      return;
+    }
 
-  // Validate client_id if provided
-  if (clientId && clientId !== tokenEntry.client_id) {
-    sendError(res, 400, { error: "invalid_grant", error_description: "client_id mismatch" });
-    return;
-  }
+    // Validate client_id if provided
+    if (clientId && clientId !== tokenEntry.client_id) {
+      sendError(res, 400, { error: "invalid_grant", error_description: "client_id mismatch" });
+      return;
+    }
 
-  // Check if Firebase token is still valid
-  if (Date.now() > tokenEntry.firebase_token_expires_at) {
-    // Firebase token expired - user must re-authenticate
-    oauthStore.deleteToken(tokenEntry.access_token);
-    sendError(res, 400, {
-      error: "invalid_grant",
-      error_description: "Session expired, please re-authenticate",
+    // Check if Firebase token needs refresh
+    let firebaseIdToken = tokenEntry.firebase_id_token;
+    let firebaseRefreshToken = tokenEntry.firebase_refresh_token;
+    let firebaseExpiresAt = tokenEntry.firebase_token_expires_at;
+
+    if (Date.now() > tokenEntry.firebase_token_expires_at) {
+      // Firebase token expired - refresh it using the stored Firebase refresh token
+      const refreshed = await refreshFirebaseToken(tokenEntry.firebase_refresh_token);
+      firebaseIdToken = refreshed.firebaseIdToken;
+      firebaseRefreshToken = refreshed.firebaseRefreshToken;
+      firebaseExpiresAt = refreshed.expiresAt;
+    }
+
+    // Rotate OAuth tokens (OAuth 2.1 requirement)
+    const newAccessToken = generateRandomString(64);
+    const newRefreshToken = generateRandomString(64);
+
+    // Create new token entry with potentially refreshed Firebase token
+    const newTokenEntry: TokenEntry = {
+      access_token: newAccessToken,
+      refresh_token: newRefreshToken,
+      client_id: tokenEntry.client_id,
+      client_name: tokenEntry.client_name,
+      scope: tokenEntry.scope,
+      firebase_id_token: firebaseIdToken,
+      firebase_refresh_token: firebaseRefreshToken,
+      firebase_token_expires_at: firebaseExpiresAt,
+      resource: tokenEntry.resource,
+      created_at: Date.now(),
+    };
+
+    // Rotate tokens in Firestore (delete old, create new)
+    await oauthStore.rotateTokens(refreshToken, newTokenEntry);
+
+    // Return token response with full expiration time (since we refreshed)
+    sendJson(res, 200, {
+      access_token: newAccessToken,
+      token_type: "Bearer",
+      expires_in: TOKEN_EXPIRES_IN,
+      refresh_token: newRefreshToken,
+      scope: tokenEntry.scope,
     });
-    return;
+  } catch (error) {
+    console.error("Token refresh error:", error);
+    sendError(res, 500, {
+      error: "server_error",
+      error_description: error instanceof Error ? error.message : "Token refresh failed",
+    });
   }
-
-  // Rotate tokens (OAuth 2.1 requirement)
-  const newAccessToken = generateRandomString(64);
-  const newRefreshToken = generateRandomString(64);
-
-  // Delete old token entry
-  oauthStore.deleteToken(tokenEntry.access_token);
-
-  // Create new token entry
-  const newTokenEntry: TokenEntry = {
-    access_token: newAccessToken,
-    refresh_token: newRefreshToken,
-    client_id: tokenEntry.client_id,
-    scope: tokenEntry.scope,
-    firebase_id_token: tokenEntry.firebase_id_token,
-    firebase_token_expires_at: tokenEntry.firebase_token_expires_at,
-    resource: tokenEntry.resource,
-    created_at: Date.now(),
-  };
-
-  oauthStore.saveToken(newTokenEntry);
-
-  // Calculate remaining time
-  const remainingSeconds = Math.floor(
-    (tokenEntry.firebase_token_expires_at - Date.now()) / 1000
-  );
-
-  // Return token response
-  sendJson(res, 200, {
-    access_token: newAccessToken,
-    token_type: "Bearer",
-    expires_in: remainingSeconds,
-    refresh_token: newRefreshToken,
-    scope: tokenEntry.scope,
-  });
 }
 
 /**
  * Get Firebase ID token from OAuth access token
  * Used by /mcp endpoint to authenticate requests
+ *
+ * Auto-refreshes expired Firebase tokens using stored refresh token.
  */
-export function getFirebaseTokenFromAccessToken(accessToken: string): string | null {
-  const tokenEntry = oauthStore.getTokenByAccessToken(accessToken);
+export async function getFirebaseTokenFromAccessToken(accessToken: string): Promise<string | null> {
+  const tokenEntry = await oauthStore.getTokenByAccessToken(accessToken);
   if (!tokenEntry) {
     return null;
   }
 
-  // Check if Firebase token is still valid
+  // Check if Firebase token needs refresh
   if (Date.now() > tokenEntry.firebase_token_expires_at) {
-    oauthStore.deleteToken(accessToken);
-    return null;
+    try {
+      // Refresh Firebase token using stored refresh token
+      const refreshed = await refreshFirebaseToken(tokenEntry.firebase_refresh_token);
+
+      // Update stored token with new Firebase credentials
+      await oauthStore.updateToken(accessToken, {
+        firebase_id_token: refreshed.firebaseIdToken,
+        firebase_refresh_token: refreshed.firebaseRefreshToken,
+        firebase_token_expires_at: refreshed.expiresAt,
+      });
+
+      return refreshed.firebaseIdToken;
+    } catch (error) {
+      console.error("Failed to refresh Firebase token:", error);
+      // If refresh fails, delete the token and return null
+      await oauthStore.deleteToken(accessToken);
+      return null;
+    }
   }
 
   return tokenEntry.firebase_id_token;

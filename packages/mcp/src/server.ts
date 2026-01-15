@@ -75,8 +75,8 @@ function extractBearerToken(req: IncomingMessage): string | null {
 async function resolveFirebaseToken(
   bearerToken: string
 ): Promise<{ token: string; source: "oauth" | "apikey" } | null> {
-  // First, try OAuth access token
-  const oauthToken = getFirebaseTokenFromAccessToken(bearerToken);
+  // First, try OAuth access token (now async with auto-refresh)
+  const oauthToken = await getFirebaseTokenFromAccessToken(bearerToken);
   if (oauthToken) {
     return { token: oauthToken, source: "oauth" };
   }

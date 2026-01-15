@@ -85,8 +85,10 @@ export interface TokenEntry {
   access_token: string;
   refresh_token?: string;
   client_id: string;
+  client_name?: string;
   scope: string;
   firebase_id_token: string;
+  firebase_refresh_token: string;
   firebase_token_expires_at: number;
   resource: string;
   created_at: number;
