@@ -17,14 +17,14 @@ steps:
     args:
       - 'build'
       - '-t'
-      - 'gcr.io/graffiticode/mcp:$COMMIT_SHA'
+      - 'gcr.io/graffiticode-app/mcp:$COMMIT_SHA'
       - '.'
 
   # Push image to Container Registry
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - 'gcr.io/graffiticode/mcp:$COMMIT_SHA'
+      - 'gcr.io/graffiticode-app/mcp:$COMMIT_SHA'
     id: Push
 
   # Deploy to Cloud Run
@@ -32,9 +32,9 @@ steps:
     args:
       - run
       - deploy
-      - mcp
+      - mcp-service
       - '--platform=managed'
-      - '--image=gcr.io/graffiticode/mcp:$COMMIT_SHA'
+      - '--image=gcr.io/graffiticode-app/mcp:$COMMIT_SHA'
       - >-
         --labels=commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
       - '--region=$_DEPLOY_REGION'
@@ -44,7 +44,7 @@ steps:
     entrypoint: gcloud
 
 images:
-  - 'gcr.io/graffiticode/mcp:$COMMIT_SHA'
+  - 'gcr.io/graffiticode-app/mcp:$COMMIT_SHA'
 
 options:
   substitutionOption: ALLOW_LOOSE

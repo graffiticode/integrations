@@ -18,7 +18,7 @@ import type {
 } from "./types.js";
 
 // Environment configuration
-const MCP_SERVER_URL = process.env.MCP_SERVER_URL || "http://localhost:3001";
+const MCP_SERVER_URL = process.env.MCP_SERVER_URL || "https://mcp.graffiticode.org";
 const CONSOLE_URL = process.env.CONSOLE_URL || "https://graffiticode.org";
 const AUTH_URL = process.env.GRAFFITICODE_AUTH_URL || "https://auth.graffiticode.org";
 const FIREBASE_API_KEY = "AIzaSyAoVuUNi8ElnS7cn6wc3D8XExML-URLw0I";
