@@ -35,8 +35,11 @@ import { tools, handleToolCall } from "./tools.js";
 import { createAuthClient } from "./auth.js";
 import {
   generateFormWidgetHtml,
+  generateClaudeWidgetHtml,
   WIDGET_RESOURCE_URI,
   WIDGET_MIME_TYPE,
+  CLAUDE_WIDGET_RESOURCE_URI,
+  CLAUDE_WIDGET_MIME_TYPE,
 } from "./widget/index.js";
 import {
   handleProtectedResourceMetadata,
@@ -54,7 +57,7 @@ const PORT = parseInt(process.env.PORT || "3001", 10);
 const transports = new Map<string, StreamableHTTPServerTransport>();
 const servers = new Map<string, Server>();
 
-const MCP_SERVER_URL = process.env.MCP_SERVER_URL || `http://localhost:${PORT}`;
+const MCP_SERVER_URL = process.env.MCP_SERVER_URL || "https://mcp.graffiticode.org";
 
 function extractBearerToken(req: IncomingMessage): string | null {
   const authHeader = req.headers.authorization;
@@ -163,7 +166,7 @@ function createMcpServer(tokenProvider: TokenProvider) {
     }
   });
 
-  // List available resources (Skybridge widgets for ChatGPT)
+  // List available resources (widgets for ChatGPT and Claude)
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
     return {
       resources: [
@@ -171,7 +174,13 @@ function createMcpServer(tokenProvider: TokenProvider) {
           uri: WIDGET_RESOURCE_URI,
           name: "Graffiticode Form Widget",
           mimeType: WIDGET_MIME_TYPE,
-          description: "Interactive form widget for Graffiticode items",
+          description: "Interactive form widget for ChatGPT",
+        },
+        {
+          uri: CLAUDE_WIDGET_RESOURCE_URI,
+          name: "Graffiticode Form Widget (Claude)",
+          mimeType: CLAUDE_WIDGET_MIME_TYPE,
+          description: "Interactive form widget for Claude",
         },
       ],
     };
@@ -179,7 +188,9 @@ function createMcpServer(tokenProvider: TokenProvider) {
 
   // Read resource content
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    if (request.params.uri === WIDGET_RESOURCE_URI) {
+    const { uri } = request.params;
+
+    if (uri === WIDGET_RESOURCE_URI) {
       return {
         contents: [
           {
@@ -190,7 +201,20 @@ function createMcpServer(tokenProvider: TokenProvider) {
         ],
       };
     }
-    throw new Error(`Resource not found: ${request.params.uri}`);
+
+    if (uri === CLAUDE_WIDGET_RESOURCE_URI) {
+      return {
+        contents: [
+          {
+            uri: CLAUDE_WIDGET_RESOURCE_URI,
+            mimeType: CLAUDE_WIDGET_MIME_TYPE,
+            text: generateClaudeWidgetHtml(),
+          },
+        ],
+      };
+    }
+
+    throw new Error(`Resource not found: ${uri}`);
   });
 
   return server;

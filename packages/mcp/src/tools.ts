@@ -8,7 +8,7 @@ import {
   listLanguages as apiListLanguages,
   getLanguageInfo as apiGetLanguageInfo,
 } from "./api.js";
-import { WIDGET_RESOURCE_URI, WIDGET_CSP } from "./widget/index.js";
+import { WIDGET_RESOURCE_URI, WIDGET_CSP, CLAUDE_WIDGET_RESOURCE_URI } from "./widget/index.js";
 
 // --- Help Entry Structure (matches console HelpPanel) ---
 
@@ -83,8 +83,11 @@ Returns item_id for use in subsequent update_item or get_item calls.`,
     required: ["language", "description"],
   },
   _meta: {
+    // ChatGPT Apps metadata
     "openai/outputTemplate": WIDGET_RESOURCE_URI,
     "openai/widgetCSP": WIDGET_CSP,
+    // Claude MCP Apps metadata
+    ui: { resourceUri: CLAUDE_WIDGET_RESOURCE_URI },
   },
 } as const;
 
@@ -112,8 +115,11 @@ Language is auto-detected from the item.`,
     required: ["item_id", "modification"],
   },
   _meta: {
+    // ChatGPT Apps metadata
     "openai/outputTemplate": WIDGET_RESOURCE_URI,
     "openai/widgetCSP": WIDGET_CSP,
+    // Claude MCP Apps metadata
+    ui: { resourceUri: CLAUDE_WIDGET_RESOURCE_URI },
   },
 } as const;
 
@@ -138,8 +144,11 @@ Returns the item's data, code, and metadata.`,
     openWorldHint: false,
   },
   _meta: {
+    // ChatGPT Apps metadata
     "openai/outputTemplate": WIDGET_RESOURCE_URI,
     "openai/widgetCSP": WIDGET_CSP,
+    // Claude MCP Apps metadata
+    ui: { resourceUri: CLAUDE_WIDGET_RESOURCE_URI },
   },
 } as const;
 
