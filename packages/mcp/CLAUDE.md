@@ -9,6 +9,8 @@ npm run build      # Compile TypeScript to dist/
 npm run clean      # Remove dist/ directory
 npm run start      # Run stdio MCP server (requires GRAFFITICODE_API_KEY env var)
 npm run start:hosted  # Run Streamable HTTP hosted server (reads PORT env, defaults to 3001)
+npm run gcp:build  # Deploy to Google Cloud Run via Cloud Build
+npm run gcp:logs   # View Cloud Run logs
 ```
 
 ## Architecture
